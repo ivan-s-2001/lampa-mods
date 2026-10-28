@@ -428,6 +428,7 @@
         var full = e.body || (e.object && e.object.activity && e.object.activity.render ? e.object.activity.render() : L.Activity.active().activity.render());
         var box = full.find('.full-start-new__buttons, .full-start__buttons').first();
         if (!box.length || box.find('.ch-streams-button').length) return;
+        box.find('.button--play').toggleClass('hide',String(setting('ch_replace_watch',false)) === 'true');
         var saved = L.Storage.get('ch_resume',{})[cardKey(e.data.movie)];
         var button = $('<div class="full-start__button selector ch-streams-button"><svg><use xlink:href="#sprite-play"></use></svg><span></span></div>');
         button.find('span').text(saved && !saved.completed && saved.time > 15 ? 'Продолжить' : 'Смотреть');
@@ -448,6 +449,7 @@
         L.SettingsApi.addComponent({component:'ch_streams', name:'CinemaHall · просмотр', icon:'<svg viewBox="0 0 24 24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>'});
         [
             ['ch_streams_enabled','trigger',true,null,'Кнопка CinemaHall','После изменения открой карточку заново'],
+            ['ch_replace_watch','trigger',false,null,'CinemaHall — основная кнопка просмотра','Скрыть стандартную кнопку «Смотреть»; изменение применяется при новом открытии карточки'],
             ['ch_sources','select','all',{all:'Все настроенные Jackett и Prowlarr',current:'Текущий парсер Lampa'},'Источники','Адреса и ключи берутся из настроек «Парсер»'],
             ['ch_player','select','lampa',{lampa:'Встроенный Lampa',android:'Системный Android'},'Плеер','Системный вариант доступен для несовместимых форматов'],
             ['ch_max_resolution','select','1080',{'720':'720p','1080':'1080p','2160':'2160p'},'Предел качества в режиме «Авто»','Ручной выбор показывает все качества']
@@ -470,9 +472,10 @@
         });
         L.Player.listener.follow('close', function () { $('.ch-player-options').remove(); if (session) session.inPlayer = false; });
         if (root.CinemaHallNative) {
+            $('body').addClass('ch-native');
             L.Storage.set('internal_torrclient',true);
             if (L.Storage.get('ch_native_setup',false) !== true) {
-                L.Storage.set('ch_start_home',true); L.Storage.set('ch_native_setup',true);
+                L.Storage.set('ch_start_home',true); L.Storage.set('ch_replace_watch',true); L.Storage.set('ch_native_setup',true);
             }
         }
         api.open = open; api.stop = stop;

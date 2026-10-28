@@ -88,7 +88,7 @@ def prepare(shell, web, binary, abi):
     index = destination / 'index.html'
     html = index.read_text()
     html = replace(html, 'window.youtube_lazy_load = true', '''window.youtube_lazy_load = true;
-        window.lampa_settings = {account_use:false, account_sync:false, socket_use:false, services:false, feed:false, youtube:false, plugins_store:false};''')
+        window.lampa_settings = {account_use:false, account_sync:false, socket_use:false, services:false, feed:false, youtube:false, plugins_store:false, disable_features:{reactions:true,discuss:true,ai:true,subscribe:true,ads:true,remote_configuration:true}};''')
     html = replace(html, "putScript('app.min.js?v=' + cache_version, function () {})", "putScript('app.min.js?v=' + cache_version, function () { putScript('cinemahall.js', function () { putScript('cinemahall-look.js', function () {}) }) })")
     index.write_text(html)
     target = app / 'src/main/jniLibs' / abi / 'libtorrserver.so'

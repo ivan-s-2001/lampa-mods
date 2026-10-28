@@ -52,6 +52,7 @@ body.ch-look.ch-look-gold {--ch-accent:#f4cb87}
 .ch-look .ch-watch__voice.focus {background:#2b3450}
 .ch-look .ch-player-options {background:var(--ch-accent);color:var(--ch-ink);border-radius:.5em}
 .ch-look.ch-look-lite .menu__item[data-action="feed"],.ch-look.ch-look-lite .menu__item[data-action="anime"],.ch-look.ch-look-lite .menu__item[data-action="subscribes"],.ch-look.ch-look-lite .menu__item[data-action="myperson"],.ch-look.ch-look-lite .full-start-new__reactions,.ch-look.ch-look-lite .button--reaction {display:none!important}
+.ch-look.ch-look-lite.ch-native .menu__item[data-action="main"],.ch-look.ch-look-lite.ch-native .menu__item[data-action="catalog"] {display:none!important}
 .ch-look.ch-look-compact .full-start-new__title {font-size:2.4em}
 .ch-look.ch-look-compact .full-start-new__poster {max-width:16em}
 .ch-look.ch-look-compact .full-start-new__body {padding-top:.5em}

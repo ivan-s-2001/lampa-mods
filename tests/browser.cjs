@@ -98,6 +98,13 @@ const root = path.resolve(__dirname,'..');
     await page.waitForFunction(()=>mock.played.length===3);
     assert.equal(await page.evaluate(()=>mock.values.torrserver_url),'http://127.0.0.1:45678');
     assert.ok(await page.evaluate(()=>mock.nativeStarts>0));
+    await page.evaluate(()=>{
+      Lampa.Storage.set('ch_replace_watch',true);
+      jQuery('.full-start-new__buttons').empty().append('<div class="full-start__button selector button--play">Native watch</div>');
+      Lampa.Listener.send('full',{type:'complite',body:jQuery('body'),data:{movie:mock.film}});
+    });
+    assert.equal(await page.locator('.button--play.hide').count(),1,'native mode must leave one primary watch action');
+    assert.equal(await page.locator('.ch-streams-button span').textContent(),'Продолжить');
     const rows=await page.evaluate(()=>new Promise((resolve,reject)=>Lampa.Api.sources.cinemahall.main({},resolve,reject)));
     assert.ok(rows.some(row=>row.title==='Продолжить просмотр'));
     assert.equal(rows.find(row=>row.title==='Новые фильмы').results.length,1,'catalog must exclude duplicate cards and anime');
