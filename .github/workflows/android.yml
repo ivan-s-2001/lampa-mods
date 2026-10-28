@@ -1,0 +1,54 @@
+name: Build Android TV preview
+on:
+  workflow_dispatch:
+  push:
+    paths: ['android/**', '.github/workflows/android.yml', 'src/**']
+permissions:
+  contents: read
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, armeabi-v7a]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Read pinned upstream versions
+        id: pins
+        run: |
+          echo "shell=$(jq -r .shell.revision android/upstream.json)" >> "$GITHUB_OUTPUT"
+          echo "web=$(jq -r .web.revision android/upstream.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: lampa-app/LAMPA
+          ref: ${{ steps.pins.outputs.shell }}
+          path: _upstream/shell
+      - uses: actions/checkout@v4
+        with:
+          repository: yumata/lampa
+          ref: ${{ steps.pins.outputs.web }}
+          path: _upstream/web
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Prepare plugins and embedded engine
+        env:
+          TARGET_ABI: ${{ matrix.abi }}
+        run: |
+          npm run build
+          python3 scripts/download_engine.py "$TARGET_ABI" _build/torrserver
+          python3 android/prepare.py --shell _upstream/shell --web _upstream/web --binary _build/torrserver --abi "$TARGET_ABI"
+      - name: Compile debug APK
+        working-directory: _upstream/shell
+        run: bash ./gradlew :app:assembleLiteDebug --stacktrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CinemaHall-preview-${{ matrix.abi }}
+          path: _upstream/shell/app/build/outputs/apk/lite/debug/*.apk
+          if-no-files-found: error

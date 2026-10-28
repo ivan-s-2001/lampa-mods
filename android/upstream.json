@@ -1,0 +1,12 @@
+{
+  "shell": {"repository":"lampa-app/LAMPA","revision":"28d7616f52d969abd6a93d8692b15a8525b36efc"},
+  "web": {"repository":"yumata/lampa","revision":"86f3afa5997793242cc2a081da96efb0934ae71f"},
+  "torrserver": {
+    "repository":"YouROK/TorrServer",
+    "tag":"MatriX.147.1",
+    "assets": {
+      "arm64-v8a": {"name":"TorrServer-android-arm64","sha256":"93250bb1850e69663c6758398be515c2c429595cb4692c6eccb367f2236868d5"},
+      "armeabi-v7a": {"name":"TorrServer-android-arm7","sha256":"e775001edf7bfb2adebfde0ba36780357c0951f12203adb367bd69b2b45522b6"}
+    }
+  }
+}

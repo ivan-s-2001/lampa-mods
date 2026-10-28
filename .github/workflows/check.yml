@@ -1,0 +1,17 @@
+name: Check plugins
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --ignore-scripts
+      - run: npm run check && npm test && npm run build
+      - run: git diff --exit-code -- cinemahall.js cinemahall-look.js
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:browser

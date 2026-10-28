@@ -1,0 +1,8 @@
+node_modules/
+_upstream/
+_build/
+*.apk
+*.aab
+__pycache__/
+*.pyc
+qa-vendor/
