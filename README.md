@@ -70,7 +70,7 @@ Android workflow скачивает закреплённые upstream-исход
 
 Собственные файлы проекта — GPL-3.0-or-later. Сборка сохраняет лицензии upstream-компонентов:
 
-- [Lampa Android](https://github.com/lampa-app/LAMPA) — основа оболочки.
+- [Lampa Android](https://github.com/lampa-app/LAMPA) — основа оболочки. В закреплённой ревизии отдельная лицензия проекта не обнаружена; условия распространения производного APK нужно уточнить до публичного релиза.
 - [Lampa Web](https://github.com/yumata/lampa) — веб-приложение, GPL-2.0.
 - [TorrServer](https://github.com/YouROK/TorrServer) — торрентный движок, GPL-3.0.
 - [Руководство по плагинам](https://github.com/yumata/lampa-source/tree/main/docs/ru).

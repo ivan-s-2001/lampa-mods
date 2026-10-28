@@ -2,12 +2,12 @@ name: Build Android TV preview
 on:
   workflow_dispatch:
   push:
-    paths: ['android/**', '.github/workflows/android.yml', 'src/**']
+    paths: ['android/**', '.github/workflows/android.yml', 'src/**', 'scripts/**']
 permissions:
   contents: read
 jobs:
   android:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
@@ -37,6 +37,8 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools platforms;android-34 build-tools;34.0.0
       - name: Prepare plugins and embedded engine
         env:
           TARGET_ABI: ${{ matrix.abi }}

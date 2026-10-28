@@ -76,7 +76,7 @@ def prepare(shell, web, binary, abi):
             resource.write_text(value)
     destination = app / 'src/main/assets/lampa'
     destination.mkdir(parents=True, exist_ok=True)
-    for name in ['app.min.js', 'assembly.json', 'css', 'fonts', 'icons', 'img', 'lang', 'sound', 'vender', 'webos', 'index.html']:
+    for name in ['app.min.js', 'assembly.json', 'css', 'fonts', 'icons', 'img', 'lang', 'sound', 'vender', 'webos', 'index.html', 'LICENSE']:
         source = web / name
         if not source.exists():
             if name == 'sound': continue
