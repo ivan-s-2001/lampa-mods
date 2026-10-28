@@ -276,7 +276,7 @@
     }
     function nativeEngine(s, done, fail) {
         if (!root.CinemaHallNative) { done(); return; }
-        var deadline = Date.now() + 16000;
+        var deadline = Date.now() + 25000;
         try { root.CinemaHallNative.startTorrentEngine(); } catch (_) { fail('Не удалось запустить встроенный движок'); return; }
         function check() {
             if (!active(s)) return;

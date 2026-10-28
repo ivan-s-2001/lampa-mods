@@ -87,20 +87,24 @@ class EmbeddedTorrentService : Service() {
                     getSettings.outputStream.use { it.write("{\"action\":\"get\"}".toByteArray()) }
                     JSONObject(getSettings.inputStream.bufferedReader().use { it.readText() })
                 } finally { getSettings.disconnect() }
+                val needsSettings = current.optLong("CacheSize") != 64L * 1024L * 1024L || current.optBoolean("EnableBonjour", true)
                 // TorrServer's API stores CacheSize in bytes, not megabytes.
                 current.put("CacheSize", 64L * 1024L * 1024L)
                 current.put("EnableBonjour", false)
-                val settings = URL("$endpoint/settings").openConnection() as HttpURLConnection
-                settings.requestMethod = "POST"
-                settings.connectTimeout = 1000
-                settings.readTimeout = 1000
-                settings.doOutput = true
-                settings.setRequestProperty("Content-Type", "application/json")
-                try {
-                    val body = JSONObject().put("action", "set").put("sets", current).toString()
-                    settings.outputStream.use { it.write(body.toByteArray()) }
-                    check(settings.responseCode in 200..299) { "Не удалось настроить кэш торрентного движка" }
-                } finally { settings.disconnect() }
+                if (needsSettings) {
+                    val settings = URL("$endpoint/settings").openConnection() as HttpURLConnection
+                    settings.requestMethod = "POST"
+                    settings.connectTimeout = 1000
+                    // Applying settings restarts server services; Rutor's stop alone waits 1.5 s.
+                    settings.readTimeout = 6000
+                    settings.doOutput = true
+                    settings.setRequestProperty("Content-Type", "application/json")
+                    try {
+                        val body = JSONObject().put("action", "set").put("sets", current).toString()
+                        settings.outputStream.use { it.write(body.toByteArray()) }
+                        check(settings.responseCode in 200..299) { "Не удалось настроить кэш торрентного движка" }
+                    } finally { settings.disconnect() }
+                }
                 EmbeddedTorrentState.url = endpoint
                 EmbeddedTorrentState.state = "ready"
                 process.waitFor()
