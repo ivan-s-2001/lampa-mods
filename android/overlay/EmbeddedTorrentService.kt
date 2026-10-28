@@ -87,7 +87,9 @@ class EmbeddedTorrentService : Service() {
                     getSettings.outputStream.use { it.write("{\"action\":\"get\"}".toByteArray()) }
                     JSONObject(getSettings.inputStream.bufferedReader().use { it.readText() })
                 } finally { getSettings.disconnect() }
-                current.put("CacheSize", 64)
+                // TorrServer's API stores CacheSize in bytes, not megabytes.
+                current.put("CacheSize", 64L * 1024L * 1024L)
+                current.put("EnableBonjour", false)
                 val settings = URL("$endpoint/settings").openConnection() as HttpURLConnection
                 settings.requestMethod = "POST"
                 settings.connectTimeout = 1000
