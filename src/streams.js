@@ -1,4 +1,4 @@
-/* CinemaHall Streams 0.1.0 — standalone Lampa plugin. GPL-3.0-or-later. */
+/* CinemaHall Streams 0.2.0 — standalone Lampa plugin. GPL-3.0-or-later. */
 (function (root) {
     'use strict';
     var VOICES = [
@@ -123,7 +123,9 @@
     var core = {hash: hash, profile: profile, episode: episode, merge: merge, groups: groups, filesFor: filesFor, esc: esc, cardKey:cardKey, autoCandidates:autoCandidates};
     if (typeof module === 'object' && module.exports) { module.exports = core; return; }
     if (!root || root.CinemaHallStreams) return;
-    var api = root.CinemaHallStreams = {version: '0.1.0', core: core}, L, $, session;
+    var providers = root.CinemaHallProviders;
+    var api = root.CinemaHallStreams = {version: '0.2.0', core: core}, L, $, session;
+    var searchCache = Object.create(null), sourceHealth = Object.create(null), sourceLast = Object.create(null);
     function setting(name, fallback) { var v = L.Storage.field(name); return v == null || v === '' ? fallback : v; }
     function enabled() { return str(setting('ch_streams_enabled', 'true')) !== 'false'; }
     function notify(s) { L.Noty.show(s); }
@@ -141,10 +143,10 @@
         s.cleanups.push(function () { ended = true; clearTimeout(timer); });
         try { call(function (v) { finish(done, v); }, function (e) { finish(fail, e); }); } catch (_) { finish(fail, 'Ошибка вызова API'); }
     }
-    function request(s, url, done, fail) {
+    function request(s, url, done, fail, options) {
         var net = new L.Reguest();
         s.cleanups.push(function () { net.clear(); });
-        guard(s, function (ok, no) { net.timeout(s.timeout || 18000); net.native(url, ok, no); }, (s.timeout || 18000) + 1000, done, fail);
+        guard(s, function (ok, no) { net.timeout(s.timeout || 18000); net.native(url, ok, no, false, options); }, (s.timeout || 18000) + 1000, done, fail);
     }
     function closeLoading() { L.Modal.close(); }
     function loading(s, text) {
@@ -161,51 +163,112 @@
         }});
     }
     function getSources() {
-        var sources = [], type = setting('parser_torrent_type', 'jackett'), mode = setting('ch_sources', 'all');
+        var mode = setting('ch_sources', 'all'), sources = mode === 'current' ? [] : providers.definitions.filter(function (p) { return String(setting('ch_source_' + p.id,true)) !== 'false'; }).map(function (p) { return Object.assign({},p); }), type = setting('parser_torrent_type', 'jackett');
         ['jackett', 'prowlarr'].forEach(function (kind) {
             if (mode === 'current' && type !== kind) return;
             ['', '_two'].forEach(function (suffix, index) {
                 var use = setting('parser_use_link', 'one');
                 if (mode === 'current' && ((use === 'one' && index) || (use === 'two' && !index))) return;
                 var base = str(setting(kind + '_url' + suffix, '')).trim().replace(/\/+$/, '');
-                if (/^https?:\/\//i.test(base)) sources.push({kind: kind, base: base, key: str(setting(kind + '_key' + suffix, ''))});
+                if (/^https?:\/\//i.test(base)) sources.push({id:kind + suffix,name:kind + (index ? ' 2' : ''),kind: kind, base: base, key: str(setting(kind + '_key' + suffix, ''))});
             });
         });
         return sources.filter(function (v, i, a) { return a.findIndex(function (n) { return n.kind === v.kind && n.base === v.base && n.key === v.key; }) === i; });
     }
-    function sourceURL(spec, query, serial) {
-        if (spec.kind === 'jackett') return spec.base + '/api/v2.0/indexers/all/results?apikey=' + encodeURIComponent(spec.key) + '&Query=' + encodeURIComponent(query) + '&Category[]=' + (serial ? '5000' : '2000');
-        return spec.base + '/api/v1/search?apikey=' + encodeURIComponent(spec.key) + '&query=' + encodeURIComponent(query) + '&type=' + (serial ? 'tvsearch' : 'search') + '&categories=' + (serial ? '5000' : '2000');
-    }
     function search(s) {
-        loading(s, 'Поиск и объединение источников…');
-        var sources = getSources(), rows = [], remaining = sources.length, successes = 0;
-        function finish() {
-            if (!active(s) || --remaining > 0) return;
-            closeLoading();
-            s.items = merge(rows); s.groups = groups(s.items);
-            if (!s.items.length) {
-                var original = s.movie.original_title || s.movie.original_name;
-                if (successes && original && original !== s.query && !s.originalTried) { s.originalTried = true; s.query = original; search(s); return; }
-                notify(successes ? 'Раздачи не найдены' : 'Парсеры не ответили. Проверь адреса, ключи и доступ с устройства.'); stop(); L.Controller.toggle(s.controller); return;
+        if (s.serial && setting('ch_sources','all') !== 'current' && String(setting('ch_source_eztv',true)) !== 'false' && !providers.imdb(s.movie) && !s.imdbTried && s.movie.id && (!s.movie.source || /^(tmdb|cinemahall)$/.test(s.movie.source))) {
+            s.imdbTried = true;
+            var tmdb = L.Api.sources.tmdb;
+            if (tmdb && tmdb.get) {
+                loading(s,'Уточняем идентификатор сериала…');
+                guard(s,function (ok,no) { tmdb.get('tv/' + s.movie.id + '/external_ids',{},ok,no); },3000,function (ids) {
+                    s.movie = Object.assign({},s.movie,{external_ids:ids}); search(s);
+                },function () { search(s); });
+                return;
             }
-            if (successes < sources.length) notify('Часть парсеров недоступна. Показаны результаты остальных.');
-            if (s.automatic) automatic(s); else chooseQuality(s);
         }
-        if (!sources.length) {
-            // Retain support for Lampa's configured TorrServer parser.
-            remaining = 1;
-            guard(s, function (ok, no) { L.Parser.get({search: s.query, movie: s.movie, from_search: true}, ok, no); }, 20000,
-                function (json) { successes++; rows = json.Results || []; finish(); }, finish);
+        loading(s, 'Поиск и объединение источников…');
+        var sources = getSources().filter(function (p) { return !(p.movie && s.serial) && !(p.tv && (!s.serial || !providers.imdb(s.movie))); });
+        var rows = [], pending = 0, index = 0, completed = 0, successes = 0, ended = false;
+        var deadline = setTimeout(finish,12000);
+        s.cleanups.push(function () { clearTimeout(deadline); });
+        if (!sources.length && setting('ch_sources','all') === 'current') {
+            s.timeout = null; clearTimeout(deadline);
+            guard(s,function (ok,no) { L.Parser.get({search:s.query,movie:s.movie,from_search:true},ok,no); },12000,function (json) { rows = json.Results || []; successes = 1; finish(); },finish);
             return;
         }
-        sources.forEach(function (spec) {
-            request(s, sourceURL(spec, s.query, s.serial), function (json) {
-                var list = spec.kind === 'jackett' ? json.Results : json;
-                if (Array.isArray(list)) { successes++; rows = rows.concat(list.filter(function (v) { return !v.protocol || v.protocol === 'torrent'; })); }
-                finish();
-            }, finish);
+        s.timeout = 6500;
+        function finish() {
+            if (!active(s) || ended) return;
+            ended = true; clearTimeout(deadline);
+            closeLoading(); s.timeout = null;
+            s.items = merge(rows); s.groups = groups(s.items);
+            if (!s.items.length) {
+                notify(successes ? 'Раздачи не найдены. Доступность источников — в настройках CinemaHall.' : 'Источники недоступны. Открой «Состояние источников» в настройках CinemaHall.');
+                stop(); L.Controller.toggle(s.controller); return;
+            }
+            if (successes < sources.length) notify('Часть источников недоступна. Найдено раздач: ' + s.items.length);
+            if (s.automatic) automatic(s); else chooseQuality(s);
+        }
+        function pump() {
+            if (!active(s) || ended) return;
+            if (completed === sources.length) { finish(); return; }
+            while (pending < 3 && index < sources.length) run(sources[index++]);
+        }
+        function run(spec) {
+            pending++;
+            var international = /^(knaben|csv|apibay)$/.test(spec.kind), original = s.movie.original_title || s.movie.original_name;
+            var queries = international && original && original !== s.query ? [original,s.query] : !/^(jacred|yts|eztv)$/.test(spec.kind) && original && original !== s.query ? [s.query,original] : [s.query];
+            var attempt = 0, url, cacheKey, started = Date.now(), id = spec.id;
+            var health = sourceHealth[id];
+            function end(list, error, cached) {
+                if (!active(s) || ended) return;
+                if (!error) { successes++; rows = rows.concat(list); }
+                sourceHealth[id] = {name:spec.name,status:error ? 'error' : 'ok',count:list.length,ms:Date.now()-started,time:Date.now(),cached:!!cached,code:error && Number(error.status) || 0,schema:!!(error && error.schema)};
+                pending--; completed++; pump();
+            }
+            if (health && health.status === 'error' && Date.now() - health.time < 60000) { pending--; completed++; pump(); return; }
+            sourceHealth[id] = {name:spec.name,status:'pending',time:Date.now(),count:0};
+            function next() {
+                if (!active(s) || ended) return;
+                url = providers.url(spec,queries[attempt++],s.movie,s.serial); cacheKey = url;
+                var cached = searchCache[cacheKey];
+                if (cached && Date.now()-cached.time < 300000) { received(cached.rows,true); return; }
+                var wait = Math.max(0,(sourceLast[id] || 0) + 2200 - Date.now());
+                function send() {
+                    if (!active(s) || ended) return;
+                    sourceLast[id] = Date.now();
+                    request(s,url,function (json) {
+                        if (ended) return;
+                        var list;
+                        try { list = providers.parse(spec,json,root.DOMParser); }
+                        catch (_) { end([],{schema:true}); return; }
+                        var keys = Object.keys(searchCache); if (keys.length >= 24) delete searchCache[keys[0]];
+                        searchCache[cacheKey] = {time:Date.now(),rows:list}; received(list,false);
+                    },function (e) { end([],e || {status:0}); },{dataType:spec.kind === 'rutor' ? 'text' : 'json'});
+                }
+                var timer = setTimeout(send,wait); s.cleanups.push(function () { clearTimeout(timer); });
+            }
+            function received(list,cached) {
+                if (ended) return;
+                list = list.filter(function (row) { return providers.relevant(row,s.movie,s.serial); });
+                if (!list.length && attempt < queries.length) next();
+                else end(list,null,cached);
+            }
+            next();
+        }
+        pump();
+    }
+    function diagnostics() {
+        var entries = getSources().map(function (p) {
+            var h = sourceHealth[p.id], text = !h ? 'Ещё не проверен' : h.status === 'pending' ? 'Не завершён за отведённое время' : h.status === 'ok' ? h.count + ' раздач · ' + (h.cached ? 'кэш' : h.ms + ' мс') : 'Недоступен' + (h.schema ? ' · неожиданный формат ответа' : h.code ? ' · HTTP ' + h.code : ' · сеть или таймаут');
+            return {title:esc(p.name),subtitle:esc(text),value:p.id};
         });
+        entries.push({title:'Сбросить кэш и паузы после ошибок',value:'reset'});
+        L.Select.show({title:'Источники · последний поиск',items:entries,onSelect:function (v) {
+            if (v.value === 'reset') { searchCache = Object.create(null); sourceHealth = Object.create(null); notify('Кэш и паузы сброшены'); }
+            L.Controller.toggle('settings');
+        },onBack:function () { L.Controller.toggle('settings'); }});
     }
     function automatic(s) {
         var candidates = autoCandidates(s.groups, Number(setting('ch_max_resolution', '1080')));
@@ -450,10 +513,15 @@
         [
             ['ch_streams_enabled','trigger',true,null,'Кнопка CinemaHall','После изменения открой карточку заново'],
             ['ch_replace_watch','trigger',false,null,'CinemaHall — основная кнопка просмотра','Скрыть стандартную кнопку «Смотреть»; изменение применяется при новом открытии карточки'],
-            ['ch_sources','select','all',{all:'Все настроенные Jackett и Prowlarr',current:'Текущий парсер Lampa'},'Источники','Адреса и ключи берутся из настроек «Парсер»'],
+            ['ch_sources','select','all',{all:'Встроенные + свои парсеры',current:'Только текущий парсер Lampa'},'Источники','По умолчанию поиск работает без ввода адресов и ключей'],
             ['ch_player','select','lampa',{lampa:'Встроенный Lampa',android:'Системный Android'},'Плеер','Системный вариант доступен для несовместимых форматов'],
             ['ch_max_resolution','select','1080',{'720':'720p','1080':'1080p','2160':'2160p'},'Предел качества в режиме «Авто»','Ручной выбор показывает все качества']
         ].forEach(function (p) { L.SettingsApi.addParam({component:'ch_streams',param:{name:p[0],type:p[1],default:p[2],values:p[3]},field:{name:p[4],description:p[5]}}); });
+        providers.definitions.forEach(function (p) {
+            L.SettingsApi.addParam({component:'ch_streams',param:{name:'ch_source_' + p.id,type:'trigger',default:true},field:{name:p.name,description:p.tv ? 'Сериалы · при наличии IMDb в карточке' : p.movie ? 'Фильмы · международные релизы' : 'Встроенный поиск · без ключа'}});
+        });
+        L.SettingsApi.addParam({component:'ch_streams',param:{name:'ch_source_status',type:'button'},field:{name:'Состояние источников',description:'Последний поиск, ошибки и очистка кэша'},onChange:diagnostics});
+        api.diagnostics = function () { return JSON.parse(JSON.stringify(sourceHealth)); };
         L.Listener.follow('full', addButton);
         L.Player.listener.follow('ready', playerControls);
         L.Player.listener.follow('start',function (data) {

@@ -1,4 +1,80 @@
-/* CinemaHall Streams 0.1.0 — standalone Lampa plugin. GPL-3.0-or-later. */
+/* Public search adapters. No server, credentials, SDKs or remote executable code. */
+(function (root) {
+    'use strict';
+    var definitions = [
+        {id:'jacred',name:'JacRed',kind:'jacred',base:'https://jac.red'},
+        {id:'knaben',name:'Knaben',kind:'knaben',base:'https://api.knaben.org'},
+        {id:'rutor',name:'RuTor',kind:'rutor',base:'https://rutor.info'},
+        {id:'csv',name:'Torrents.csv',kind:'csv',base:'https://torrents-csv.com'},
+        {id:'apibay',name:'APIBay',kind:'apibay',base:'https://apibay.org'},
+        {id:'yts',name:'YTS',kind:'yts',base:'https://movies-api.accel.li',movie:true},
+        {id:'eztv',name:'EZTV',kind:'eztv',base:'https://eztvx.to',tv:true}
+    ];
+    function imdb(movie) { var v = movie.imdb_id || (movie.external_ids || {}).imdb_id || ''; return /^tt\d+$/.test(v) ? v : ''; }
+    function magnet(h) { return /^[a-f0-9]{40}$/i.test(h || '') && !/^0+$/.test(h) ? 'magnet:?xt=urn:btih:' + h : ''; }
+    function url(spec, query, movie, serial) {
+        var q = encodeURIComponent(query), original = movie.original_title || movie.original_name || query;
+        switch (spec.kind) {
+            case 'jacred': return spec.base + '/api/v2.0/indexers/all/results?query=' + q + '&title=' + encodeURIComponent(movie.title || movie.name || query) + '&title_original=' + encodeURIComponent(original) + '&year=' + encodeURIComponent((movie.release_date || movie.first_air_date || '').slice(0,4)) + '&is_serial=' + (serial ? 2 : 1);
+            case 'jackett': return spec.base + '/api/v2.0/indexers/all/results?apikey=' + encodeURIComponent(spec.key) + '&Query=' + q + '&Category[]=' + (serial ? '5000' : '2000');
+            case 'prowlarr': return spec.base + '/api/v1/search?apikey=' + encodeURIComponent(spec.key) + '&query=' + q + '&type=' + (serial ? 'tvsearch' : 'search') + '&categories=' + (serial ? '5000' : '2000');
+            case 'knaben': return spec.base + '/v2/search?q=' + q + '&o=seeders&d=desc&s=100&c=' + (serial ? '2000000' : '3000000') + '&t=rutracker,1337x,thepiratebay,eztv,yts';
+            case 'csv': return spec.base + '/service/search?q=' + q + '&size=100';
+            case 'apibay': return spec.base + '/q.php?q=' + q + '&cat=200';
+            case 'rutor': return spec.base + '/search/0/0/100/2/' + q + '/';
+            case 'yts': return spec.base + '/api/v2/list_movies.json?query_term=' + encodeURIComponent(imdb(movie) || original) + '&limit=50&sort_by=seeds&order_by=desc';
+            case 'eztv': return spec.base + '/api/get-torrents?imdb_id=' + imdb(movie).slice(2) + '&limit=100&page=1';
+        }
+        throw new Error('Unknown source');
+    }
+    function array(v) { if (!Array.isArray(v)) throw new Error('Unexpected response'); return v.slice(0,300); }
+    function titleKey(s) { return String(s || '').toLowerCase().replace(/ё/g,'е').replace(/[^a-zа-я0-9]+/g,' ').trim(); }
+    function relevant(row, movie, serial) {
+        var title = titleKey(row.Title || row.title), aliases = [movie.title,movie.name,movie.original_title,movie.original_name].map(titleKey).filter(Boolean);
+        if (!aliases.some(function (alias) { return (' ' + title + ' ').indexOf(' ' + alias + ' ') >= 0; })) return false;
+        var desc = String(row.CategoryDesc || row.categoryDescription || ''), tracker = String(row.Tracker || row.indexer || '');
+        if (/anime|аниме|hentai|xxx/i.test(desc) || /nyaa|tokyotosho/i.test(tracker)) return false;
+        var year = (movie.release_date || '').slice(0,4), years = String(row.Title || row.title).match(/\b(?:19|20)\d{2}\b/g);
+        return serial || !year || !years || years.indexOf(year) >= 0;
+    }
+    function parse(spec, json, DOM) {
+        var kind = spec.kind, list;
+        if (kind === 'rutor') {
+            if (typeof json !== 'string' || !/id=["']index["']/i.test(json)) throw new Error('Unexpected HTML');
+            // Parse an inert allowlist of table/anchor markup; never insert a tracker page into Lampa.
+            var html = json.replace(/<(script|style)[\s\S]*?<\/\1\s*>/gi,'').replace(/<(?!\/?(?:table|tbody|tr|td|a|span)\b)[^>]*>/gi,'');
+            var doc = new DOM().parseFromString(html,'text/html'); list = [];
+            Array.prototype.forEach.call(doc.querySelectorAll('tr'),function (tr) {
+                var a = tr.querySelector('a[href^="/torrent/"]'), m = tr.querySelector('a[href^="magnet:"]'), seeds = tr.querySelector('.green');
+                if (a && m) list.push({Title:a.textContent,MagnetUri:m.getAttribute('href'),Seeders:Number((seeds ? seeds.textContent : '').replace(/\D/g,'')),Tracker:spec.name});
+            });
+            return list.slice(0,100);
+        }
+        if (!json || typeof json !== 'object') throw new Error('Unexpected response');
+        if (kind === 'jackett' || kind === 'jacred') list = array(json.Results);
+        else if (kind === 'prowlarr') list = array(json).filter(function (v) { return !v.protocol || v.protocol === 'torrent'; });
+        else if (kind === 'knaben') list = array(json.hits).filter(function (v) {
+            var cats = v.categoryId || []; if (!Array.isArray(cats)) cats = [cats];
+            return !cats.some(function (n) { return Number(n) >= 5000000 && Number(n) < 7000000; });
+        }).map(function (v) { return {Title:v.title,InfoHash:v.hash,MagnetUri:v.magnetUrl || magnet(v.hash),Link:v.link,Seeders:v.seeders,Tracker:v.tracker || v.trackerId || spec.name}; });
+        else if (kind === 'csv') list = array(json.torrents).map(function (v) { return {Title:v.name,MagnetUri:magnet(v.infohash),Seeders:v.seeders}; });
+        else if (kind === 'apibay') list = array(json).filter(function (v) { return v.id !== '0' && /^20[0-9]$/.test(String(v.category)); }).map(function (v) { return {Title:v.name,MagnetUri:magnet(v.info_hash),Seeders:v.seeders}; });
+        else if (kind === 'eztv') list = array(json.torrents_count === 0 ? [] : json.torrents).map(function (v) { return {Title:v.title,MagnetUri:v.magnet_url || magnet(v.hash),Seeders:v.seeds}; });
+        else if (kind === 'yts') {
+            if (json.status !== 'ok' || !json.data || typeof json.data.movie_count !== 'number') throw new Error('Unexpected YTS response');
+            list = [];
+            array(json.data.movies || []).forEach(function (m) { array(m.torrents || []).forEach(function (t) {
+                list.push({Title:(m.title_long || m.title + ' (' + m.year + ')') + ' ' + t.quality + ' ' + (t.type === 'web' ? 'WEBRip' : 'BluRay') + ' ' + (t.video_codec || '') + ' YTS',MagnetUri:magnet(t.hash),Seeders:t.seeds});
+            }); });
+        } else throw new Error('Unknown source');
+        return list.filter(function (v) { return v && typeof v === 'object'; }).map(function (v) { return Object.assign({},v,{Tracker:v.Tracker || v.indexer || spec.name}); });
+    }
+    var api = {definitions:definitions,url:url,parse:parse,relevant:relevant,imdb:imdb};
+    if (typeof module === 'object' && module.exports) module.exports = api;
+    else if (root && !root.CinemaHallProviders) root.CinemaHallProviders = api;
+}(typeof window !== 'undefined' ? window : null));
+
+/* CinemaHall Streams 0.2.0 — standalone Lampa plugin. GPL-3.0-or-later. */
 (function (root) {
     'use strict';
     var VOICES = [
@@ -123,7 +199,9 @@
     var core = {hash: hash, profile: profile, episode: episode, merge: merge, groups: groups, filesFor: filesFor, esc: esc, cardKey:cardKey, autoCandidates:autoCandidates};
     if (typeof module === 'object' && module.exports) { module.exports = core; return; }
     if (!root || root.CinemaHallStreams) return;
-    var api = root.CinemaHallStreams = {version: '0.1.0', core: core}, L, $, session;
+    var providers = root.CinemaHallProviders;
+    var api = root.CinemaHallStreams = {version: '0.2.0', core: core}, L, $, session;
+    var searchCache = Object.create(null), sourceHealth = Object.create(null), sourceLast = Object.create(null);
     function setting(name, fallback) { var v = L.Storage.field(name); return v == null || v === '' ? fallback : v; }
     function enabled() { return str(setting('ch_streams_enabled', 'true')) !== 'false'; }
     function notify(s) { L.Noty.show(s); }
@@ -141,10 +219,10 @@
         s.cleanups.push(function () { ended = true; clearTimeout(timer); });
         try { call(function (v) { finish(done, v); }, function (e) { finish(fail, e); }); } catch (_) { finish(fail, 'Ошибка вызова API'); }
     }
-    function request(s, url, done, fail) {
+    function request(s, url, done, fail, options) {
         var net = new L.Reguest();
         s.cleanups.push(function () { net.clear(); });
-        guard(s, function (ok, no) { net.timeout(s.timeout || 18000); net.native(url, ok, no); }, (s.timeout || 18000) + 1000, done, fail);
+        guard(s, function (ok, no) { net.timeout(s.timeout || 18000); net.native(url, ok, no, false, options); }, (s.timeout || 18000) + 1000, done, fail);
     }
     function closeLoading() { L.Modal.close(); }
     function loading(s, text) {
@@ -161,51 +239,112 @@
         }});
     }
     function getSources() {
-        var sources = [], type = setting('parser_torrent_type', 'jackett'), mode = setting('ch_sources', 'all');
+        var mode = setting('ch_sources', 'all'), sources = mode === 'current' ? [] : providers.definitions.filter(function (p) { return String(setting('ch_source_' + p.id,true)) !== 'false'; }).map(function (p) { return Object.assign({},p); }), type = setting('parser_torrent_type', 'jackett');
         ['jackett', 'prowlarr'].forEach(function (kind) {
             if (mode === 'current' && type !== kind) return;
             ['', '_two'].forEach(function (suffix, index) {
                 var use = setting('parser_use_link', 'one');
                 if (mode === 'current' && ((use === 'one' && index) || (use === 'two' && !index))) return;
                 var base = str(setting(kind + '_url' + suffix, '')).trim().replace(/\/+$/, '');
-                if (/^https?:\/\//i.test(base)) sources.push({kind: kind, base: base, key: str(setting(kind + '_key' + suffix, ''))});
+                if (/^https?:\/\//i.test(base)) sources.push({id:kind + suffix,name:kind + (index ? ' 2' : ''),kind: kind, base: base, key: str(setting(kind + '_key' + suffix, ''))});
             });
         });
         return sources.filter(function (v, i, a) { return a.findIndex(function (n) { return n.kind === v.kind && n.base === v.base && n.key === v.key; }) === i; });
     }
-    function sourceURL(spec, query, serial) {
-        if (spec.kind === 'jackett') return spec.base + '/api/v2.0/indexers/all/results?apikey=' + encodeURIComponent(spec.key) + '&Query=' + encodeURIComponent(query) + '&Category[]=' + (serial ? '5000' : '2000');
-        return spec.base + '/api/v1/search?apikey=' + encodeURIComponent(spec.key) + '&query=' + encodeURIComponent(query) + '&type=' + (serial ? 'tvsearch' : 'search') + '&categories=' + (serial ? '5000' : '2000');
-    }
     function search(s) {
-        loading(s, 'Поиск и объединение источников…');
-        var sources = getSources(), rows = [], remaining = sources.length, successes = 0;
-        function finish() {
-            if (!active(s) || --remaining > 0) return;
-            closeLoading();
-            s.items = merge(rows); s.groups = groups(s.items);
-            if (!s.items.length) {
-                var original = s.movie.original_title || s.movie.original_name;
-                if (successes && original && original !== s.query && !s.originalTried) { s.originalTried = true; s.query = original; search(s); return; }
-                notify(successes ? 'Раздачи не найдены' : 'Парсеры не ответили. Проверь адреса, ключи и доступ с устройства.'); stop(); L.Controller.toggle(s.controller); return;
+        if (s.serial && setting('ch_sources','all') !== 'current' && String(setting('ch_source_eztv',true)) !== 'false' && !providers.imdb(s.movie) && !s.imdbTried && s.movie.id && (!s.movie.source || /^(tmdb|cinemahall)$/.test(s.movie.source))) {
+            s.imdbTried = true;
+            var tmdb = L.Api.sources.tmdb;
+            if (tmdb && tmdb.get) {
+                loading(s,'Уточняем идентификатор сериала…');
+                guard(s,function (ok,no) { tmdb.get('tv/' + s.movie.id + '/external_ids',{},ok,no); },3000,function (ids) {
+                    s.movie = Object.assign({},s.movie,{external_ids:ids}); search(s);
+                },function () { search(s); });
+                return;
             }
-            if (successes < sources.length) notify('Часть парсеров недоступна. Показаны результаты остальных.');
-            if (s.automatic) automatic(s); else chooseQuality(s);
         }
-        if (!sources.length) {
-            // Retain support for Lampa's configured TorrServer parser.
-            remaining = 1;
-            guard(s, function (ok, no) { L.Parser.get({search: s.query, movie: s.movie, from_search: true}, ok, no); }, 20000,
-                function (json) { successes++; rows = json.Results || []; finish(); }, finish);
+        loading(s, 'Поиск и объединение источников…');
+        var sources = getSources().filter(function (p) { return !(p.movie && s.serial) && !(p.tv && (!s.serial || !providers.imdb(s.movie))); });
+        var rows = [], pending = 0, index = 0, completed = 0, successes = 0, ended = false;
+        var deadline = setTimeout(finish,12000);
+        s.cleanups.push(function () { clearTimeout(deadline); });
+        if (!sources.length && setting('ch_sources','all') === 'current') {
+            s.timeout = null; clearTimeout(deadline);
+            guard(s,function (ok,no) { L.Parser.get({search:s.query,movie:s.movie,from_search:true},ok,no); },12000,function (json) { rows = json.Results || []; successes = 1; finish(); },finish);
             return;
         }
-        sources.forEach(function (spec) {
-            request(s, sourceURL(spec, s.query, s.serial), function (json) {
-                var list = spec.kind === 'jackett' ? json.Results : json;
-                if (Array.isArray(list)) { successes++; rows = rows.concat(list.filter(function (v) { return !v.protocol || v.protocol === 'torrent'; })); }
-                finish();
-            }, finish);
+        s.timeout = 6500;
+        function finish() {
+            if (!active(s) || ended) return;
+            ended = true; clearTimeout(deadline);
+            closeLoading(); s.timeout = null;
+            s.items = merge(rows); s.groups = groups(s.items);
+            if (!s.items.length) {
+                notify(successes ? 'Раздачи не найдены. Доступность источников — в настройках CinemaHall.' : 'Источники недоступны. Открой «Состояние источников» в настройках CinemaHall.');
+                stop(); L.Controller.toggle(s.controller); return;
+            }
+            if (successes < sources.length) notify('Часть источников недоступна. Найдено раздач: ' + s.items.length);
+            if (s.automatic) automatic(s); else chooseQuality(s);
+        }
+        function pump() {
+            if (!active(s) || ended) return;
+            if (completed === sources.length) { finish(); return; }
+            while (pending < 3 && index < sources.length) run(sources[index++]);
+        }
+        function run(spec) {
+            pending++;
+            var international = /^(knaben|csv|apibay)$/.test(spec.kind), original = s.movie.original_title || s.movie.original_name;
+            var queries = international && original && original !== s.query ? [original,s.query] : !/^(jacred|yts|eztv)$/.test(spec.kind) && original && original !== s.query ? [s.query,original] : [s.query];
+            var attempt = 0, url, cacheKey, started = Date.now(), id = spec.id;
+            var health = sourceHealth[id];
+            function end(list, error, cached) {
+                if (!active(s) || ended) return;
+                if (!error) { successes++; rows = rows.concat(list); }
+                sourceHealth[id] = {name:spec.name,status:error ? 'error' : 'ok',count:list.length,ms:Date.now()-started,time:Date.now(),cached:!!cached,code:error && Number(error.status) || 0,schema:!!(error && error.schema)};
+                pending--; completed++; pump();
+            }
+            if (health && health.status === 'error' && Date.now() - health.time < 60000) { pending--; completed++; pump(); return; }
+            sourceHealth[id] = {name:spec.name,status:'pending',time:Date.now(),count:0};
+            function next() {
+                if (!active(s) || ended) return;
+                url = providers.url(spec,queries[attempt++],s.movie,s.serial); cacheKey = url;
+                var cached = searchCache[cacheKey];
+                if (cached && Date.now()-cached.time < 300000) { received(cached.rows,true); return; }
+                var wait = Math.max(0,(sourceLast[id] || 0) + 2200 - Date.now());
+                function send() {
+                    if (!active(s) || ended) return;
+                    sourceLast[id] = Date.now();
+                    request(s,url,function (json) {
+                        if (ended) return;
+                        var list;
+                        try { list = providers.parse(spec,json,root.DOMParser); }
+                        catch (_) { end([],{schema:true}); return; }
+                        var keys = Object.keys(searchCache); if (keys.length >= 24) delete searchCache[keys[0]];
+                        searchCache[cacheKey] = {time:Date.now(),rows:list}; received(list,false);
+                    },function (e) { end([],e || {status:0}); },{dataType:spec.kind === 'rutor' ? 'text' : 'json'});
+                }
+                var timer = setTimeout(send,wait); s.cleanups.push(function () { clearTimeout(timer); });
+            }
+            function received(list,cached) {
+                if (ended) return;
+                list = list.filter(function (row) { return providers.relevant(row,s.movie,s.serial); });
+                if (!list.length && attempt < queries.length) next();
+                else end(list,null,cached);
+            }
+            next();
+        }
+        pump();
+    }
+    function diagnostics() {
+        var entries = getSources().map(function (p) {
+            var h = sourceHealth[p.id], text = !h ? 'Ещё не проверен' : h.status === 'pending' ? 'Не завершён за отведённое время' : h.status === 'ok' ? h.count + ' раздач · ' + (h.cached ? 'кэш' : h.ms + ' мс') : 'Недоступен' + (h.schema ? ' · неожиданный формат ответа' : h.code ? ' · HTTP ' + h.code : ' · сеть или таймаут');
+            return {title:esc(p.name),subtitle:esc(text),value:p.id};
         });
+        entries.push({title:'Сбросить кэш и паузы после ошибок',value:'reset'});
+        L.Select.show({title:'Источники · последний поиск',items:entries,onSelect:function (v) {
+            if (v.value === 'reset') { searchCache = Object.create(null); sourceHealth = Object.create(null); notify('Кэш и паузы сброшены'); }
+            L.Controller.toggle('settings');
+        },onBack:function () { L.Controller.toggle('settings'); }});
     }
     function automatic(s) {
         var candidates = autoCandidates(s.groups, Number(setting('ch_max_resolution', '1080')));
@@ -450,10 +589,15 @@
         [
             ['ch_streams_enabled','trigger',true,null,'Кнопка CinemaHall','После изменения открой карточку заново'],
             ['ch_replace_watch','trigger',false,null,'CinemaHall — основная кнопка просмотра','Скрыть стандартную кнопку «Смотреть»; изменение применяется при новом открытии карточки'],
-            ['ch_sources','select','all',{all:'Все настроенные Jackett и Prowlarr',current:'Текущий парсер Lampa'},'Источники','Адреса и ключи берутся из настроек «Парсер»'],
+            ['ch_sources','select','all',{all:'Встроенные + свои парсеры',current:'Только текущий парсер Lampa'},'Источники','По умолчанию поиск работает без ввода адресов и ключей'],
             ['ch_player','select','lampa',{lampa:'Встроенный Lampa',android:'Системный Android'},'Плеер','Системный вариант доступен для несовместимых форматов'],
             ['ch_max_resolution','select','1080',{'720':'720p','1080':'1080p','2160':'2160p'},'Предел качества в режиме «Авто»','Ручной выбор показывает все качества']
         ].forEach(function (p) { L.SettingsApi.addParam({component:'ch_streams',param:{name:p[0],type:p[1],default:p[2],values:p[3]},field:{name:p[4],description:p[5]}}); });
+        providers.definitions.forEach(function (p) {
+            L.SettingsApi.addParam({component:'ch_streams',param:{name:'ch_source_' + p.id,type:'trigger',default:true},field:{name:p.name,description:p.tv ? 'Сериалы · при наличии IMDb в карточке' : p.movie ? 'Фильмы · международные релизы' : 'Встроенный поиск · без ключа'}});
+        });
+        L.SettingsApi.addParam({component:'ch_streams',param:{name:'ch_source_status',type:'button'},field:{name:'Состояние источников',description:'Последний поиск, ошибки и очистка кэша'},onChange:diagnostics});
+        api.diagnostics = function () { return JSON.parse(JSON.stringify(sourceHealth)); };
         L.Listener.follow('full', addButton);
         L.Player.listener.follow('ready', playerControls);
         L.Player.listener.follow('start',function (data) {
@@ -589,4 +733,107 @@
     if (root.appready) init();
     else if (root.Lampa && root.Lampa.Listener) root.Lampa.Listener.follow('app', function (e) { if (e.type === 'ready') init(); });
     if (root.document) root.document.addEventListener('lampa:ready', init);
+}(typeof window !== 'undefined' ? window : null));
+
+/* Curated Lampa extensions. Uses Lampa's installation, cache and disable mechanisms. */
+(function (root) {
+    'use strict';
+    var LEVENDE = 'ce19d4a34b9152ff1adbc404be21add2d6aa3a7a', STORE = '316f1aa20774041db76475ee5f9c2160ce2fd994', NB = 'cde2cf057e6634df43553fe8deeaef5030f95945';
+    function gh(repo,sha,file) { return 'https://raw.githubusercontent.com/' + repo + '/' + sha + '/' + file; }
+    var catalog = [
+        {id:'online_mod',title:'Онлайн Мод',category:'Онлайн',url:gh('nb557/plugins',NB,'online_mod.js'),alias:'https://nb557.github.io/plugins/online_mod.js',default:true,description:'Популярный онлайн-плагин: источники, качество и озвучки. Доступность зависит от провайдера.'},
+        {id:'tv_status',title:'Цветные статусы сериалов',category:'Карточка',url:gh('levende/lampa-plugins',LEVENDE,'tv-status-color.js'),alias:'https://levende.github.io/lampa-plugins/tv-status-color.js',default:true,description:'Окрашивает статус сериала в карточке. Без отдельного сервера и фонового опроса.'},
+        {id:'networks',title:'Платформы TMDB',category:'Карточка',url:gh('levende/lampa-plugins',LEVENDE,'tmdb-networks.js'),alias:'https://levende.github.io/lampa-plugins/tmdb-networks.js',default:true,description:'Платформы и студии в карточке, переход к их фильмам и сериалам.'},
+        {id:'random',title:'Случайное из «На потом»',category:'Каталог',url:gh('levende/lampa-plugins',LEVENDE,'random-scheduled.js'),alias:'https://levende.github.io/lampa-plugins/random-scheduled.js',default:true,description:'Выбирает фильм из сохранённого списка. Без сетевых запросов.'},
+        {id:'custom_favs',title:'Свои списки закладок',category:'Библиотека',url:gh('levende/lampa-plugins',LEVENDE,'custom-favs.js'),alias:'https://levende.github.io/lampa-plugins/custom-favs.js',description:'Пользовательские списки избранного. Загрузчик автора выбирает вариант под версию Lampa.'},
+        {id:'profiles',title:'Профили',category:'Библиотека',url:gh('levende/lampa-plugins',LEVENDE,'profiles.js'),alias:'https://levende.github.io/lampa-plugins/profiles.js',description:'Раздельные профили и списки. Синхронизация настраивается в плагине автора.'},
+        {id:'bookmark_sync',title:'Синхронизация закладок',category:'Библиотека',url:gh('levende/lampa-plugins',LEVENDE,'bookmarks-sync.js'),alias:'https://levende.github.io/lampa-plugins/bookmarks-sync.js',description:'Для пользователей с настроенным аккаунтом или сервером синхронизации. Требует настройки.'},
+        {id:'collections',title:'Подборки',category:'Каталог',url:gh('lampaplugins/store',STORE,'p.js'),alias:'https://lampaplugins.github.io/store/p.js',description:'Дополнительные подборки. Может добавить собственный источник каталога.'},
+        {id:'logos',title:'Логотипы фильмов',category:'Карточка',url:gh('lampaplugins/store',STORE,'logo.js'),alias:'https://lampaplugins.github.io/store/logo.js',description:'Логотипы TMDB вместо текстового заголовка. Добавляет запрос при открытии карточки.'},
+        {id:'torrent_style',title:'Torrent Styles',category:'Просмотр',url:gh('lampaplugins/store',STORE,'torrent_styles_v2.js'),alias:'https://lampaplugins.github.io/store/torrent_styles_v2.js',description:'Оформление стандартного списка торрентов Lampa. Наш выбор качества остаётся отдельным.'},
+        {id:'jellyfin',title:'Jellyfin',category:'Медиатека',url:gh('lampaplugins/store',STORE,'pavelpikta/jellyfin.js'),alias:'https://lampaplugins.github.io/store/pavelpikta/jellyfin.js',description:'Фильмы и сериалы со своего Jellyfin. Требуются адрес сервера и вход.'},
+        {id:'filmix',title:'Filmix',category:'Онлайн',url:gh('lampaplugins/store',STORE,'fx.js'),alias:'https://lampaplugins.github.io/store/fx.js',description:'Отдельный онлайн-провайдер. Для части возможностей требуется аккаунт или подписка.'},
+        {id:'bwa',title:'BwaRC',category:'Онлайн',url:'https://bwa.ad/rc',description:'Онлайн-провайдер из публичного каталога Lampa. Внешний сервис, доступность проверяется при загрузке.'},
+        {id:'modss',title:'MODS’s',category:'Онлайн',url:'http://lampa.stream/modss',description:'Внешний онлайн-провайдер. Нужна поддержка HTTP либо рабочего HTTPS-зеркала на устройстве.'},
+        {id:'showy',title:'Showy',category:'Онлайн',url:'http://showy.online/m.js',description:'Внешний онлайн-провайдер. Нужна поддержка HTTP либо рабочего HTTPS-зеркала на устройстве.'},
+        {id:'skaz',title:'TV Skaz & Online',category:'Телевидение',url:'http://skaz.tv/tv.js',description:'IPTV и онлайн. Часть каналов требует подписки; доступ зависит от сервиса и региона.'},
+        {id:'rutube_trailers',title:'Трейлеры RuTube',category:'Карточка',url:'https://plugin.rootu.top/rutube.js',description:'Дополнительная кнопка трейлеров. Видео и поиск предоставляет внешний сервис.'},
+        {id:'itunes_trailers',title:'Трейлеры iTunes',category:'Карточка',url:'https://plugin.rootu.top/trailers.js',description:'Альтернативный источник трейлеров.'}
+    ];
+    if (typeof module === 'object' && module.exports) { module.exports = catalog; return; }
+    if (!root || root.CinemaHallExtensions) return;
+    var api = root.CinemaHallExtensions = {catalog:catalog}, L, initialized = false;
+    function esc(v) { return String(v).replace(/[&<>"']/g,function (c) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+    function installed(item) {
+        return L.Plugins.get().filter(function (p) { return p.url === item.url || (item.alias && p.url === item.alias); })[0];
+    }
+    function state(item) {
+        var plug = installed(item);
+        if (!plug) return 'Не установлен';
+        if (Number(plug.status) !== 1) return 'Выключен · перезапуск завершит отключение';
+        if (L.Plugins.errors && L.Plugins.errors().indexOf(plug.url) >= 0) return 'Ошибка загрузки · попробуй позже';
+        if (L.Plugins.loaded && L.Plugins.loaded().indexOf(plug.url) >= 0) return 'Включён в Lampa · доступность сервиса не проверена';
+        return 'Включён · ожидается загрузка';
+    }
+    function enable(item) {
+        var plug = installed(item);
+        if (plug) {
+            if (Number(plug.status) === 1) return;
+            plug.status = 1; L.Plugins.save(); L.Plugins.push(plug);
+        } else L.Plugins.add({url:item.url,status:1,name:item.title});
+    }
+    function show(category) {
+        var list = catalog.filter(function (p) { return !category || p.category === category; });
+        L.Select.show({title:category || 'CinemaHall · расширения',items:list.map(function (p) {
+            return {title:esc(p.title),subtitle:esc(state(p) + ' · ' + p.category),value:p.id};
+        }),onSelect:function (v) { details(catalog.filter(function (p) { return p.id === v.value; })[0],category); },onBack:function () { L.Controller.toggle('settings'); }});
+    }
+    function details(item,category) {
+        if (!item) return;
+        var plug = installed(item), on = plug && Number(plug.status) === 1;
+        L.Select.show({title:item.title,items:[
+            {title:on ? 'Выключить' : 'Включить',subtitle:esc(item.description),value:'toggle'},
+            {title:'Источник расширения',subtitle:esc(item.url),value:'source'},
+            {title:'Назад к списку',value:'back'}
+        ],onSelect:function (v) {
+            if (v.value === 'toggle') {
+                if (on) { plug.status = 0; L.Plugins.save(); L.Noty.show('Выключено. Перезапусти Lampa для завершения отключения.'); }
+                else { enable(item); L.Noty.show('Расширение включено. Для появления всех кнопок может понадобиться перезапуск.'); }
+            }
+            if (v.value === 'source') details(item,category); else show(category);
+        },onBack:function () { show(category); }});
+    }
+    function defaults() {
+        catalog.filter(function (p) { return p.default; }).forEach(function (p) {
+            // Honour disabled or previously installed versions; never duplicate an author URL.
+            if (!installed(p)) enable(p);
+        });
+    }
+    function init() {
+        if (initialized || !root.Lampa || !root.Lampa.SettingsApi || !root.Lampa.Plugins) return;
+        initialized = true; L = root.Lampa;
+        L.SettingsApi.addComponent({component:'ch_extensions',name:'CinemaHall · расширения',icon:'<svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 3h8v8H3zm10 0h8v8h-8zM3 13h8v8H3zm10 0h8v8h-8z"/></svg>'});
+        function button(name,description,fn) { L.SettingsApi.addParam({component:'ch_extensions',param:{name:'ch_ext_' + name,type:'button'},field:{name:name,description:description},onChange:fn}); }
+        button('Все расширения','18 расширений: установка, состояние и отключение',function () { show(); });
+        ['Онлайн','Карточка','Каталог','Библиотека','Медиатека','Просмотр','Телевидение'].forEach(function (c) { button(c,'Расширения: ' + c,function () { show(c); }); });
+        button('Отключить комплект','Выключить четыре предустановленных расширения; остальные сохранятся',function () {
+            catalog.filter(function (p) { return p.default; }).forEach(function (p) { var plug = installed(p); if (plug) plug.status = 0; });
+            L.Plugins.save(); L.Noty.show('Комплект выключен. Перезапусти Lampa.');
+        });
+        L.Listener.follow('full',function (e) {
+            if (e.type !== 'complite') return;
+            var plug = installed(catalog[0]); if (!plug || Number(plug.status) !== 1) return;
+            var full = e.body || (e.object && e.object.activity && e.object.activity.render());
+            if (!full || full.find('.view--torrent').length) return;
+            // Online Mod inserts its button after this stock anchor, absent in some lite builds.
+            full.find('.full-start-new__buttons, .full-start__buttons').first().append((root.jQuery || root.$)('<span class="view--torrent hide ch-online-anchor"></span>'));
+        });
+        if (!L.Storage.get('ch_extensions_setup_v1',false)) {
+            defaults(); L.Storage.set('ch_extensions_setup_v1',true);
+        }
+        api.show = show; api.state = state;
+    }
+    if (root.appready) init();
+    else if (root.Lampa && root.Lampa.Listener) root.Lampa.Listener.follow('app',function (e) { if (e.type === 'ready') init(); });
+    if (root.document) root.document.addEventListener('lampa:ready',init);
 }(typeof window !== 'undefined' ? window : null));
